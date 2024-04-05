@@ -1,7 +1,9 @@
-import cheerio from 'cheerio'
-import { createHash } from 'crypto'
-import { OutputAsset, OutputChunk, Plugin } from 'rollup'
-import fetch from 'node-fetch'
+import * as cheerio from 'cheerio';
+import { createHash } from 'crypto';
+import fs from 'fs';
+import fetch from 'node-fetch';
+import { OutputAsset, OutputChunk } from 'rollup';
+import { Plugin } from 'vite';
 
 export interface PluginOptions {
   /**
@@ -12,18 +14,23 @@ export interface PluginOptions {
    * The selector syntax is the same as jQuery's.
    * @default ["script","link[rel=stylesheet]"]
    */
-  selectors?: string[]
+  selectors?: string[];
+
   /**
    * A list of hashing algorithms to use when computing the integrity attribute.
-   * The hashing algorithm has to be supported by the nodejs version you're running on and by the Browser you're targeting.
+   * The hashing algorithm has to be supported by the nodejs version you're running on and by the Browser
+   * you're targeting.
    * Browsers will ignore unknown hashing functions.
-   * Standard hash functions as defined in the [subresource integrity specification](https://w3c.github.io/webappsec-subresource-integrity/#hash-functions) are: `sha256`, `sha384` and `sha512`.
+   * Standard hash functions as defined in the
+   * [subresource integrity specification](https://w3c.github.io/webappsec-subresource-integrity/#hash-functions)
+   * are: `sha256`, `sha384` and `sha512`.
    *
    * > NOTE: While browser vendors are free to support more algorithms than those stated above,
    * > they generally do not accept `sha1` and `md5` hashes.
    * @default ["sha384"]
    */
-  algorithms?: 'sha256'[] | 'sha384'[] | 'sha512'[] | string[]
+  algorithms?: 'sha256'[] | 'sha384'[] | 'sha512'[] | string[];
+
   /**
    * Specifies the value for the crossorigin attribute.
    * This attribute has to be set on the generated html tags to prevent cross-origin data leakage.
@@ -31,81 +38,78 @@ export interface PluginOptions {
    * see: [the W3C spec](https://www.w3.org/TR/SRI/#cross-origin-data-leakage) for details.
    * @default "anonymous"
    */
-  crossorigin?: 'anonymous' | 'use-credentials'
+  crossorigin?: 'anonymous' | 'use-credentials';
 
   /**
    * Can be used to disable the plugin, as subresource integrities might cause issues with hot module reloading.
    * @default true
    */
-  active?: boolean
+  active?: boolean;
 
   /**
-   * Commonly assets will be prefixed with a public path, such as "/" or "/assets". 
+   * Commonly assets will be prefixed with a public path, such as "/" or "/assets".
    * Setting this option to the public path allows plugin-sri to resolve those imports.
    * @default ""
    */
-  publicPath?: string
+  publicPath?: string;
 }
 
-const invalidHashAlgorithms = ['sha1', 'md5']
+const invalidHashAlgorithms = ['sha1', 'md5'];
 
-export default (options?: PluginOptions): Plugin => {
-  const selectors = options?.selectors || ['script', 'link[rel=stylesheet]']
-  const hashAlgorithms = options?.algorithms || ['sha384']
-  const crossorigin = options?.crossorigin || 'anonymous'
-  const publicPath = options?.publicPath ?? ''
-  let active = options?.active ?? true
+export default function subresourceIntegrity(options?: PluginOptions): Plugin {
+  const selectors = options?.selectors || ['script', 'link[rel=stylesheet]'];
+  const hashAlgorithms = options?.algorithms || ['sha384'];
+  const crossorigin = options?.crossorigin || 'anonymous';
+  const publicPath = options?.publicPath ?? '';
+  let active = options?.active ?? true;
 
   return {
     name: 'subresource-integrity',
     buildStart() {
       hashAlgorithms
-        .filter(alg => invalidHashAlgorithms.includes(alg.toLowerCase()))
-        .forEach(alg => this.warn(`Insecure hashing algorithm "${alg}" will be rejected by browsers!`))
+        .filter((alg) => invalidHashAlgorithms.includes(alg.toLowerCase()))
+        .forEach((alg) => this.warn(`Insecure hashing algorithm "${alg}" will be rejected by browsers!`));
     },
-    async generateBundle(_, bundle) {
-      if (!active) return
+    async closeBundle() {
+      if (!active) return;
 
-      for (const name in bundle) {
-        const chunk = bundle[name]
+      const buildDir = 'build';
+      let content = fs.readFileSync(buildDir + '/index.html');
 
-        if (isHtmlAsset(chunk)) {
-          const $ = cheerio.load(chunk.source.toString())
-          const elements = $(selectors.join()).get()
+      const $ = cheerio.load(content);
+      const elements = $(selectors.join()).get();
 
-          for (const el of elements) {
-            const url = ($(el).attr('href') || $(el).attr('src'))?.replace(publicPath, '')
-            if (!url) continue
+      for (const el of elements) {
+        const url = ($(el).attr('href') || $(el).attr('src'))?.replace(publicPath, '');
+        if (!url) continue;
 
-            let buf: Buffer
-            if (url in bundle) {
-              //@ts-ignore
-              buf = Buffer.from(bundle[url].code || bundle[url].source)
-            } else if (url.startsWith('http')) {
-              buf = await (await fetch(url)).buffer()
-            } else {
-              this.warn(`could not resolve resource "${url}"!`)
-              continue
-            }
-
-            const hashes = hashAlgorithms.map((algorithm) => generateIdentity(buf, algorithm))
-
-            $(el).attr('integrity', hashes.join(' '))
-            $(el).attr('crossorigin', crossorigin)
-          }
-
-          chunk.source = $.html()
+        let buf: Buffer;
+        if (fs.existsSync(buildDir + '/' + url)) {
+          //@ts-ignore
+          buf = Buffer.from(fs.readFileSync(buildDir + '/' + url));
+        } else if (url.startsWith('http')) {
+          buf = await (await fetch(url)).buffer();
+        } else {
+          this.warn(`could not resolve resource "${url}"!`);
+          continue;
         }
+
+        const hashes = hashAlgorithms.map((algorithm) => generateIdentity(buf, algorithm));
+
+        $(el).attr('integrity', hashes.join(' '));
+        $(el).attr('crossorigin', crossorigin);
       }
-    }
-  }
+
+      fs.writeFileSync(build + '/index.html', $.html());
+    },
+  };
 }
 
 function generateIdentity(source: Buffer, alg: string) {
-  const hash = createHash(alg).update(source).digest().toString('base64')
-  return `${alg.toLowerCase()}-${hash}`
+  const hash = createHash(alg).update(source).digest().toString('base64');
+  return `${alg.toLowerCase()}-${hash}`;
 }
 
 function isHtmlAsset(obj: OutputAsset | OutputChunk): obj is OutputAsset {
-  return obj.fileName.endsWith('.html') && obj.type === 'asset'
+  return obj.fileName.endsWith('.html') && obj.type === 'asset';
 }
